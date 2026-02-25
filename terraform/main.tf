@@ -11,6 +11,10 @@ provider "aws" {
   region = var.region
 }
 
+# ---------------- Availability Zones ----------------
+
+data "aws_availability_zones" "available" {}
+
 # ---------------- AMI ----------------
 
 data "aws_ami" "ubuntu" {
@@ -26,31 +30,51 @@ data "aws_ami" "ubuntu" {
 # ---------------- VPC ----------------
 
 resource "aws_vpc" "main_vpc" {
-  cidr_block = "192.168.0.0/24"
+  cidr_block           = "192.168.0.0/24"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
   tags = { Name = "project-vpc" }
 }
 
-# Public Subnet (EC2)
+# ---------------- Subnets ----------------
+
+# Public Subnet (AZ-1)
 resource "aws_subnet" "public_subnet" {
   vpc_id                  = aws_vpc.main_vpc.id
-  cidr_block              = "192.168.0.0/25"
+  cidr_block              = "192.168.0.0/26"
   map_public_ip_on_launch = true
+  availability_zone       = data.aws_availability_zones.available.names[0]
+
   tags = { Name = "public-subnet" }
 }
 
-# Private Subnet (RDS)
-resource "aws_subnet" "private_subnet" {
-  vpc_id     = aws_vpc.main_vpc.id
-  cidr_block = "192.168.0.128/25"
-  tags = { Name = "private-subnet" }
+# Private Subnet 1 (AZ-1)
+resource "aws_subnet" "private_subnet_1" {
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "192.168.0.64/26"
+  availability_zone = data.aws_availability_zones.available.names[0]
+
+  tags = { Name = "private-subnet-1" }
 }
 
-# Internet Gateway
+# Private Subnet 2 (AZ-2)
+resource "aws_subnet" "private_subnet_2" {
+  vpc_id            = aws_vpc.main_vpc.id
+  cidr_block        = "192.168.0.128/26"
+  availability_zone = data.aws_availability_zones.available.names[1]
+
+  tags = { Name = "private-subnet-2" }
+}
+
+# ---------------- Internet Gateway ----------------
+
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main_vpc.id
 }
 
-# Route Table
+# ---------------- Route Table ----------------
+
 resource "aws_route_table" "public_route" {
   vpc_id = aws_vpc.main_vpc.id
 
@@ -65,7 +89,7 @@ resource "aws_route_table_association" "rt_assoc" {
   route_table_id = aws_route_table.public_route.id
 }
 
-# ---------------- SECURITY GROUPS ----------------
+# ---------------- Security Groups ----------------
 
 # EC2 Security Group
 resource "aws_security_group" "ec2_sg" {
@@ -76,7 +100,7 @@ resource "aws_security_group" "ec2_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"] # change to your IP in production
   }
 
   ingress {
@@ -117,22 +141,28 @@ resource "aws_security_group" "rds_sg" {
 # ---------------- RDS ----------------
 
 resource "aws_db_subnet_group" "db_subnet_group" {
-  name       = "db-subnet-group"
-  subnet_ids = [aws_subnet.private_subnet.id]
+  name = "db-subnet-group"
+
+  subnet_ids = [
+    aws_subnet.private_subnet_1.id,
+    aws_subnet.private_subnet_2.id
+  ]
+
+  tags = { Name = "db-subnet-group" }
 }
 
 resource "aws_db_instance" "mysql_db" {
-  allocated_storage    = 20
-  engine               = "mysql"
-  engine_version       = "8.0"
-  instance_class       = "db.t3.micro"
-  db_name              = "webshop"
-  username             = var.db_username
-  password             = var.db_password
-  skip_final_snapshot  = true
-  publicly_accessible  = false
-  db_subnet_group_name = aws_db_subnet_group.db_subnet_group.name
-  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  allocated_storage       = 20
+  engine                  = "mysql"
+  engine_version          = "8.0"
+  instance_class          = "db.t3.micro"
+  db_name                 = "webshop"
+  username                = var.db_username
+  password                = var.db_password
+  skip_final_snapshot     = true
+  publicly_accessible     = false
+  db_subnet_group_name    = aws_db_subnet_group.db_subnet_group.name
+  vpc_security_group_ids  = [aws_security_group.rds_sg.id]
 }
 
 # ---------------- EC2 ----------------
@@ -160,9 +190,9 @@ git clone https://github.com/Kavin9898/PROJECT-new.git
 cd PROJECT-new/backend
 npm install
 
-export DB_HOST=${aws_db_instance.mysql_db.address}
-export DB_USER=${var.db_username}
-export DB_PASSWORD=${var.db_password}
+echo "DB_HOST=${aws_db_instance.mysql_db.address}" >> /etc/environment
+echo "DB_USER=${var.db_username}" >> /etc/environment
+echo "DB_PASSWORD=${var.db_password}" >> /etc/environment
 
 pm2 start server.js
 pm2 startup systemd
